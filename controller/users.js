@@ -5,6 +5,8 @@ const path = require("path");
 const Jimp = require("jimp");
 const { HttpCode } = require("../service/constants");
 const createFolderIsExist = require("../service/create-dir");
+const { nanoid } = require("nanoid");
+const EmailService = require("../service/email");
 require("dotenv").config();
 const SECRET_KEY = process.env.JWT_SECRET_KEY;
 
@@ -18,7 +20,10 @@ const register = async (req, res, next) => {
         message: "Email in use",
       });
     }
-    const newUser = await Users.create(req.body);
+    const verificationToken = nanoid();
+    const emailService = new EmailService(process.env.NODE_ENV);
+    await emailService.sendEmail(verificationToken, email);
+    const newUser = await Users.create({ ...req.body, verificationToken });
     return res.status(HttpCode.CREATED).json({
       status: "success",
       code: HttpCode.CREATED,
@@ -46,7 +51,7 @@ const login = async (req, res, next) => {
     const { email, password } = req.body;
     const user = await Users.findByEmail(email);
     const isValidPassword = await user?.validPassword(password);
-    if (!user || !isValidPassword) {
+    if (!user || !isValidPassword || user.verificationToken) {
       return next({
         status: HttpCode.UNAUTHORIZED,
         message: "Email or password is wrong",
@@ -134,7 +139,7 @@ const updateSub = async (req, res, next) => {
 
 const saveAvatarToStatic = async (req) => {
   const id = String(req.user._id);
-  const USERS_AVATARS = process.env.USERS_AVATARS;
+  const AVATAR_URL = process.env.AVATAR_URL;
   const pathFile = req.file.path;
   const newNameAvatar = `${Date.now()}-${req.file.originalname}`;
   const img = await Jimp.read(pathFile);
@@ -142,13 +147,11 @@ const saveAvatarToStatic = async (req) => {
     .autocrop()
     .cover(250, 250, Jimp.HORIZONTAL_ALIGN_CENTER | Jimp.VERTICAL_ALIGN_MIDDLE)
     .writeAsync(pathFile);
-  await createFolderIsExist(path.join(USERS_AVATARS, id));
-  await fs.rename(pathFile, path.join(USERS_AVATARS, id, newNameAvatar));
+  await createFolderIsExist(path.join(AVATAR_URL, id));
+  await fs.rename(pathFile, path.join(AVATAR_URL, id, newNameAvatar));
   const avatarUrl = path.join(id, newNameAvatar);
   try {
-    await fs.unlink(
-      path.join(process.cwd(), USERS_AVATARS, req.user.avatarURL)
-    );
+    await fs.unlink(path.join(process.cwd(), AVATAR_URL, req.user.avatarURL));
   } catch (e) {
     console.log(e.message);
   }
@@ -172,4 +175,33 @@ const avatars = async (req, res, next) => {
   }
 };
 
-module.exports = { register, login, logout, currentUser, updateSub, avatars };
+const verify = async (req, res, next) => {
+  try {
+    const user = await Users.findByVerificationToken(
+      req.params.verificationToken
+    );
+    if (!user) {
+      return next({
+        status: HttpCode.NOT_FOUND,
+        message: "User not found",
+      });
+    }
+    await Users.updateVerificationToken(user.id, null);
+    return res.json({
+      status: "success",
+      code: HttpCode.OK,
+    });
+  } catch (e) {
+    next(e);
+  }
+};
+
+module.exports = {
+  register,
+  login,
+  logout,
+  currentUser,
+  updateSub,
+  avatars,
+  verify,
+};
